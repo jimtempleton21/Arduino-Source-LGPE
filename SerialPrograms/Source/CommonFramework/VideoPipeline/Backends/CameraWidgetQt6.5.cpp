@@ -20,6 +20,8 @@
 //#include "Common/Cpp/Time.h"
 //#include "Common/Cpp/PrettyPrint.h"
 #include "Common/Qt/Redispatch.h"
+#include "CommonFramework/GlobalSettingsPanel.h"
+#include "CommonFramework/VideoPipeline/VideoPipelineOptions.h"
 #include "VideoFrameQt.h"
 #include "MediaServicesQt6.h"
 #include "CameraWidgetQt6.5.h"
@@ -225,7 +227,34 @@ CameraVideoDisplay::CameraVideoDisplay(QWidget* parent, CameraVideoSource& sourc
     this->setMinimumSize(80, 45);
     m_view->setFixedSize(this->size());
     m_view->setScene(&m_scene);
-    m_video.setSize(this->size());
+    
+    // Get rotation setting from global settings
+    double rotation_degrees = video_rotation_to_degrees(
+        GlobalSettings::instance().VIDEO_PIPELINE->VIDEO_ROTATION
+    );
+    
+    // Apply rotation
+    if (rotation_degrees == 90.0 || rotation_degrees == -90.0){
+        // After 90° rotation, width and height are swapped
+        m_video.setSize(QSize(this->height(), this->width()));
+        // Set transform origin to center before rotating
+        m_video.setTransformOriginPoint(this->height() / 2.0, this->width() / 2.0);
+        // Rotate
+        m_video.setRotation(rotation_degrees);
+        // Position at center of scene
+        m_video.setPos(this->width() / 2.0 - this->height() / 2.0, 
+                       this->height() / 2.0 - this->width() / 2.0);
+    }else{
+        // For 0° and 180° rotations, dimensions stay the same
+        m_video.setSize(QSize(this->width(), this->height()));
+        // Set transform origin to center before rotating
+        m_video.setTransformOriginPoint(this->width() / 2.0, this->height() / 2.0);
+        // Rotate
+        m_video.setRotation(rotation_degrees);
+        // Position at center of scene
+        m_video.setPos(0, 0);
+    }
+    
     m_scene.setSceneRect(QRectF(QPointF(0, 0), this->size()));
     m_scene.addItem(&m_video);
     source.set_video_output(m_video);
@@ -242,7 +271,28 @@ void CameraVideoDisplay::resizeEvent(QResizeEvent* event){
     auto scope_check = m_sanitizer.check_scope();
     m_view->setFixedSize(this->size());
     m_scene.setSceneRect(QRectF(QPointF(0, 0), this->size()));
-    m_video.setSize(this->size());
+    
+    // Get rotation setting from global settings
+    double rotation_degrees = video_rotation_to_degrees(
+        GlobalSettings::instance().VIDEO_PIPELINE->VIDEO_ROTATION
+    );
+    
+    // Update rotation based on current setting
+    if (rotation_degrees == 90.0 || rotation_degrees == -90.0){
+        // After 90° rotation, dimensions are swapped: set size with swapped width/height
+        m_video.setSize(QSize(this->height(), this->width()));
+        // Update transform origin and position after rotation
+        m_video.setTransformOriginPoint(this->height() / 2.0, this->width() / 2.0);
+        m_video.setRotation(rotation_degrees);
+        m_video.setPos(this->width() / 2.0 - this->height() / 2.0, 
+                       this->height() / 2.0 - this->width() / 2.0);
+    }else{
+        // For 0° and 180° rotations, dimensions stay the same
+        m_video.setSize(QSize(this->width(), this->height()));
+        m_video.setTransformOriginPoint(this->width() / 2.0, this->height() / 2.0);
+        m_video.setRotation(rotation_degrees);
+        m_video.setPos(0, 0);
+    }
 }
 
 

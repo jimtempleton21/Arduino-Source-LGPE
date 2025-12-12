@@ -4,9 +4,12 @@
  *
  */
 
+#include <QTransform>
 #include "Common/Cpp/Concurrency/ReverseLockGuard.h"
 #include "Common/Cpp/Concurrency/AsyncTask.h"
 #include "CommonFramework/Tools/GlobalThreadPools.h"
+#include "CommonFramework/GlobalSettingsPanel.h"
+#include "CommonFramework/VideoPipeline/VideoPipelineOptions.h"
 #include "SnapshotManager.h"
 
 //#include <iostream>
@@ -34,6 +37,28 @@ SnapshotManager::SnapshotManager(Logger& logger, QVideoFrameCache& cache)
 
 QImage SnapshotManager::frame_to_image(const QVideoFrame& frame){
     QImage image = frame.toImage();
+    
+    // Get rotation setting from global settings
+    double rotation_degrees = video_rotation_to_degrees(
+        GlobalSettings::instance().VIDEO_PIPELINE->VIDEO_ROTATION
+    );
+    
+    // Apply rotation if not zero
+    // This ensures snapshots used for inference match what the user sees in the display
+    if (rotation_degrees != 0.0){
+        QTransform transform;
+        transform.rotate(rotation_degrees);
+        image = image.transformed(transform);
+    }else{
+        // If no rotation is set, check if Qt applied rotation metadata (90° counter-clockwise)
+        // If dimensions are swapped, rotate 90° clockwise to restore original orientation
+        if (image.height() > image.width()){
+            QTransform transform;
+            transform.rotate(90.0);
+            image = image.transformed(transform);
+        }
+    }
+    
     QImage::Format format = image.format();
     if (format != QImage::Format_ARGB32 && format != QImage::Format_RGB32){
         image = image.convertToFormat(QImage::Format_ARGB32);

@@ -31,6 +31,8 @@ private:
     void update_source_list();
     //  Load all possible video resolutions from the current video source.
     void update_resolution_list();
+    //  Update the rotation combo box to reflect the current setting.
+    void update_rotation_list();
 
     //  Overwrites VideoSession::StateListener::post_startup().
     //  This function is called after setting a new video source or resetting the
@@ -46,6 +48,7 @@ private:
 
     QComboBox* m_sources_box;
     QComboBox* m_resolution_box;
+    QComboBox* m_rotation_box;
     QPushButton* m_reset_button;
 
     std::vector<std::shared_ptr<VideoSourceDescriptor>> m_sources;

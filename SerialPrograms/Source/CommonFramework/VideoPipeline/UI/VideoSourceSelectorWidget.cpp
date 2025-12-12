@@ -11,6 +11,8 @@
 #include "Common/Qt/NoWheelComboBox.h"
 #include "CommonFramework/Panels/ConsoleSettingsStretch.h"
 #include "CommonFramework/VideoPipeline/Backends/CameraImplementations.h"
+#include "CommonFramework/GlobalSettingsPanel.h"
+#include "CommonFramework/VideoPipeline/VideoPipelineOptions.h"
 #include "VideoSourceSelectorWidget.h"
 
 #include "CommonFramework/VideoPipeline/VideoSources/VideoSource_Null.h"
@@ -49,11 +51,21 @@ VideoSourceSelectorWidget::VideoSourceSelectorWidget(Logger& logger, VideoSessio
     layout1->addWidget(m_resolution_box, CONSOLE_SETTINGS_STRETCH_L1_RIGHT);
     layout1->addSpacing(5);
 
+    m_rotation_box = new NoWheelComboBox(this);
+    m_rotation_box->setMaxVisibleItems(10);
+    m_rotation_box->addItem("0°");
+    m_rotation_box->addItem("90°");
+    m_rotation_box->addItem("180°");
+    m_rotation_box->addItem("-90°");
+    layout1->addWidget(m_rotation_box, 1);
+    layout1->addSpacing(5);
+
     m_reset_button = new QPushButton("Reset Video", this);
     layout1->addWidget(m_reset_button, CONSOLE_SETTINGS_STRETCH_L1_BUTTON);
 
     update_source_list();
     update_resolution_list();
+    update_rotation_list();
 
     // Set the action for the video source selection box
     connect(
@@ -77,6 +89,31 @@ VideoSourceSelectorWidget::VideoSourceSelectorWidget(Logger& logger, VideoSessio
             }
             Resolution resolution = m_resolutions[index];
             m_session.set_resolution(resolution);
+        }
+    );
+
+    // Set the action for the video rotation selection box
+    connect(
+        m_rotation_box, static_cast<void(QComboBox::*)(int)>(&QComboBox::activated),
+        this, [](int index){
+            VideoRotation rotation = VideoRotation::ROTATE_0;
+            switch (index){
+            case 0:
+                rotation = VideoRotation::ROTATE_0;
+                break;
+            case 1:
+                rotation = VideoRotation::ROTATE_90;
+                break;
+            case 2:
+                rotation = VideoRotation::ROTATE_180;
+                break;
+            case 3:
+                rotation = VideoRotation::ROTATE_NEGATIVE_90;
+                break;
+            default:
+                return;
+            }
+            GlobalSettings::instance().VIDEO_PIPELINE->VIDEO_ROTATION.set(rotation);
         }
     );
 
@@ -153,6 +190,25 @@ void VideoSourceSelectorWidget::update_resolution_list(){
     }else{
         m_logger.log("Unable to find entry for this resolution.", COLOR_RED);
     }
+}
+void VideoSourceSelectorWidget::update_rotation_list(){
+    VideoRotation current_rotation = GlobalSettings::instance().VIDEO_PIPELINE->VIDEO_ROTATION;
+    int index = 0;
+    switch (current_rotation){
+    case VideoRotation::ROTATE_0:
+        index = 0;
+        break;
+    case VideoRotation::ROTATE_90:
+        index = 1;
+        break;
+    case VideoRotation::ROTATE_180:
+        index = 2;
+        break;
+    case VideoRotation::ROTATE_NEGATIVE_90:
+        index = 3;
+        break;
+    }
+    m_rotation_box->setCurrentIndex(index);
 }
 
 

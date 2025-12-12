@@ -10,9 +10,41 @@
 #include "Common/Cpp/Options/GroupOption.h"
 #include "Common/Cpp/Options/BooleanCheckBoxOption.h"
 #include "Common/Cpp/Options/SimpleIntegerOption.h"
+#include "Common/Cpp/Options/EnumDropdownOption.h"
 #include "Backends/CameraImplementations.h"
 
 namespace PokemonAutomation{
+
+
+enum class VideoRotation{
+    ROTATE_0,
+    ROTATE_90,
+    ROTATE_180,
+    ROTATE_NEGATIVE_90,
+};
+
+inline EnumDropdownDatabase<VideoRotation> make_VideoRotation_database(){
+    return EnumDropdownDatabase<VideoRotation>({
+        {VideoRotation::ROTATE_0, "0", "0°"},
+        {VideoRotation::ROTATE_90, "90", "90°"},
+        {VideoRotation::ROTATE_180, "180", "180°"},
+        {VideoRotation::ROTATE_NEGATIVE_90, "-90", "-90°"},
+    });
+}
+
+inline double video_rotation_to_degrees(VideoRotation rotation){
+    switch (rotation){
+    case VideoRotation::ROTATE_0:
+        return 0.0;
+    case VideoRotation::ROTATE_90:
+        return 90.0;
+    case VideoRotation::ROTATE_180:
+        return 180.0;
+    case VideoRotation::ROTATE_NEGATIVE_90:
+        return -90.0;
+    }
+    return 0.0;
+}
 
 
 class VideoPipelineOptions : public GroupOption{
@@ -38,6 +70,13 @@ public:
             LockMode::UNLOCK_WHILE_RUNNING,
             5
         )
+        , VIDEO_ROTATION(
+            "<b>Video Rotation:</b><br>"
+            "Rotate the video input display. Useful for fixing orientation issues with broken video cards.",
+            make_VideoRotation_database(),
+            LockMode::UNLOCK_WHILE_RUNNING,
+            VideoRotation::ROTATE_0
+        )
     {
         PA_ADD_OPTION(VIDEO_BACKEND);
 #if QT_VERSION_MAJOR == 5
@@ -45,6 +84,7 @@ public:
 #endif
 
         PA_ADD_OPTION(AUTO_RESET_SECONDS);
+        PA_ADD_OPTION(VIDEO_ROTATION);
     }
 
 public:
@@ -54,6 +94,7 @@ public:
 #endif
 
     SimpleIntegerOption<uint8_t> AUTO_RESET_SECONDS;
+    EnumDropdownOption<VideoRotation> VIDEO_ROTATION;
 };
 
 

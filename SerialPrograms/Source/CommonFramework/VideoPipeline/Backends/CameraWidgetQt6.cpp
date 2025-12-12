@@ -11,11 +11,15 @@
 #include <iostream>
 #include <QCamera>
 #include <QPainter>
+#include <QImage>
+#include <QTransform>
 #include <QMediaDevices>
 #include <QVideoSink>
 //#include "Common/Cpp/Exceptions.h"
 //#include "Common/Cpp/Time.h"
 #include "Common/Qt/Redispatch.h"
+#include "CommonFramework/GlobalSettingsPanel.h"
+#include "CommonFramework/VideoPipeline/VideoPipelineOptions.h"
 #include "VideoFrameQt.h"
 #include "MediaServicesQt6.h"
 #include "CameraWidgetQt6.h"
@@ -213,11 +217,50 @@ void CameraVideoDisplay::paintEvent(QPaintEvent* event){
         return;
     }
 
-    QRect rect(0, 0, this->width(), this->height());
-    QVideoFrame::PaintOptions options;
-    QPainter painter(this);
+    // Convert to image to bypass Qt's automatic rotation based on camera metadata
+    // This ensures the display matches the raw frame orientation used for inference
+    QImage image = frame.toImage();
+    if (image.isNull()){
+        // Fallback to frame.paint() if conversion fails
+        QRect rect(0, 0, this->width(), this->height());
+        QVideoFrame::PaintOptions options;
+        QPainter painter(this);
+        frame.paint(&painter, rect, options);
+        m_source.report_rendered_frame(current_time());
+        return;
+    }
 
-    frame.paint(&painter, rect, options);
+    QPainter painter(this);
+    
+    // Get rotation setting from global settings
+    double rotation_degrees = video_rotation_to_degrees(
+        GlobalSettings::instance().VIDEO_PIPELINE->VIDEO_ROTATION
+    );
+    
+    // Apply rotation if not zero
+    if (rotation_degrees != 0.0){
+        painter.save();
+        
+        // Transform: move to center, rotate, move back
+        painter.translate(this->width() / 2.0, this->height() / 2.0);
+        painter.rotate(rotation_degrees);
+        
+        // For 90° and -90° rotations, dimensions are swapped
+        if (rotation_degrees == 90.0 || rotation_degrees == -90.0){
+            QRect imageRect(-this->height() / 2.0, -this->width() / 2.0, this->height(), this->width());
+            painter.drawImage(imageRect, image);
+        }else{
+            // For 0° and 180° rotations, dimensions stay the same
+            QRect imageRect(-this->width() / 2.0, -this->height() / 2.0, this->width(), this->height());
+            painter.drawImage(imageRect, image);
+        }
+        
+        painter.restore();
+    }else{
+        // No rotation - draw image normally
+        QRect imageRect(0, 0, this->width(), this->height());
+        painter.drawImage(imageRect, image);
+    }
     m_source.report_rendered_frame(current_time());
 }
 
