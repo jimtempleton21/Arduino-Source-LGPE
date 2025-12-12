@@ -1561,6 +1561,8 @@ file(GLOB LIBRARY_SOURCES
     Source/PokemonLGPE/PokemonLGPE_Settings.h
     Source/PokemonLGPE/Programs/Farming/PokemonLGPE_DailyItemFarmer.cpp
     Source/PokemonLGPE/Programs/Farming/PokemonLGPE_DailyItemFarmer.h
+    Source/PokemonLGPE/Programs/General/PokemonLGPE_RareCandy.cpp
+    Source/PokemonLGPE/Programs/General/PokemonLGPE_RareCandy.h
     Source/PokemonLGPE/Programs/PokemonLGPE_GameEntry.cpp
     Source/PokemonLGPE/Programs/PokemonLGPE_GameEntry.h
     Source/PokemonLGPE/Programs/ShinyHunting/PokemonLGPE_AlolanTrade.cpp

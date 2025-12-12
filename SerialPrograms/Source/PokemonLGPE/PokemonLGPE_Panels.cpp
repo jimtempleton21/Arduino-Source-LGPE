@@ -10,6 +10,7 @@
 #include "PokemonLGPE_Settings.h"
 
 #include "Programs/Farming/PokemonLGPE_DailyItemFarmer.h"
+#include "Programs/General/PokemonLGPE_RareCandy.h"
 #include "Programs/ShinyHunting/PokemonLGPE_AlolanTrade.h"
 #include "Programs/ShinyHunting/PokemonLGPE_FossilRevival.h"
 #include "Programs/ShinyHunting/PokemonLGPE_GiftReset.h"
@@ -33,6 +34,7 @@ std::vector<PanelEntry> PanelListFactory::make_panels() const{
 
     ret.emplace_back("---- General ----");
     ret.emplace_back(make_single_switch_program<DailyItemFarmer_Descriptor, DailyItemFarmer>());
+    ret.emplace_back(make_single_switch_program<RareCandy_Descriptor, RareCandy>());
 
     ret.emplace_back("---- Shiny Hunting ----");
     ret.emplace_back(make_single_switch_program<AlolanTrade_Descriptor, AlolanTrade>());
