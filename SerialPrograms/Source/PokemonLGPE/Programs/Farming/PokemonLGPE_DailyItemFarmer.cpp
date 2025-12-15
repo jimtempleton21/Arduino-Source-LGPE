@@ -95,12 +95,12 @@ DailyItemFarmer::DailyItemFarmer()
 void DailyItemFarmer::start_local_trade(SingleSwitchProgramEnvironment& env, JoyconContext& context){
     env.log("Starting local trade.");
     //Open Menu -> Communication -> Nearby player -> Local Trade
-    pbf_press_button(context, BUTTON_X, 200ms, 800ms);
-    pbf_move_joystick(context, 255, 128, 100ms, 400ms);
-    pbf_press_button(context, BUTTON_A, 200ms, 1000ms);
-    pbf_press_button(context, BUTTON_A, 200ms, 2000ms); //  Black screen
-    pbf_press_button(context, BUTTON_A, 200ms, 1000ms);
-    pbf_press_button(context, BUTTON_A, 200ms, 1000ms);
+    pbf_press_button(context, BUTTON_X, 200ms, 1200ms);
+    pbf_move_joystick(context, 255, 128, 100ms, 600ms);
+    pbf_press_button(context, BUTTON_A, 200ms, 1500ms);
+    pbf_press_button(context, BUTTON_A, 200ms, 2500ms); //  Black screen
+    pbf_press_button(context, BUTTON_A, 200ms, 1500ms);
+    pbf_press_button(context, BUTTON_A, 200ms, 1500ms);
 
     //Enter link code
     switch(LINK_CODE) {
@@ -146,10 +146,10 @@ void DailyItemFarmer::start_local_trade(SingleSwitchProgramEnvironment& env, Joy
         break;
     }
     //Select symbol three times, then enter link search
-    pbf_press_button(context, BUTTON_A, 200ms, 100ms);
-    pbf_press_button(context, BUTTON_A, 200ms, 100ms);
-    pbf_press_button(context, BUTTON_A, 200ms, 100ms);
-    pbf_wait(context, 1000ms); //let search start
+    pbf_press_button(context, BUTTON_A, 200ms, 300ms);
+    pbf_press_button(context, BUTTON_A, 200ms, 300ms);
+    pbf_press_button(context, BUTTON_A, 200ms, 300ms);
+    pbf_wait(context, 1500ms); //let search start
     context.wait_for_all_requests();
 }
 
@@ -175,11 +175,11 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
 
     //  Initiating a local connection tends to mess up the wireless schedule.
     //  Thus we wait a bit for the connection to clear up.
-    pbf_press_button(context, BUTTON_ZL, 160ms, 840ms);
-    pbf_press_button(context, BUTTON_ZL, 160ms, 840ms);
-    pbf_press_button(context, BUTTON_ZL, 160ms, 840ms);
+    pbf_press_button(context, BUTTON_ZL, 160ms, 1200ms);
+    pbf_press_button(context, BUTTON_ZL, 160ms, 1200ms);
+    pbf_press_button(context, BUTTON_ZL, 160ms, 1200ms);
     context.wait_for_all_requests();
-    context.wait_for(1000ms);
+    context.wait_for(1500ms);
 
     home_to_date_time(env.console, context, true);
     
@@ -202,7 +202,7 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
     for (uint32_t count = 0; count < ATTEMPTS; count++) {
         env.log("Pick up item.");
 
-        pbf_mash_button(context, BUTTON_A, 4000ms);
+        pbf_mash_button(context, BUTTON_A, 5000ms);
         context.wait_for_all_requests();
 
         start_local_trade(env, context);
@@ -213,11 +213,11 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
 #if 1
         //  Initiating a local connection tends to mess up the wireless schedule.
         //  Thus we wait a bit for the connection to clear up.
-        pbf_press_button(context, BUTTON_ZL, 160ms, 840ms);
-        pbf_press_button(context, BUTTON_ZL, 160ms, 840ms);
-        pbf_press_button(context, BUTTON_ZL, 160ms, 840ms);
+        pbf_press_button(context, BUTTON_ZL, 160ms, 1200ms);
+        pbf_press_button(context, BUTTON_ZL, 160ms, 1200ms);
+        pbf_press_button(context, BUTTON_ZL, 160ms, 1200ms);
         context.wait_for_all_requests();
-        context.wait_for(1000ms);
+        context.wait_for(1500ms);
 #endif
 
         home_to_date_time(env.console, context, true);
@@ -241,8 +241,8 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
 
         //  Start with one B press while the poll rate changes.
         //  If we mash here we silent disconnect the ESP32.
-        pbf_press_button(context, BUTTON_B, 200ms, 1800ms);
-        pbf_mash_button(context, BUTTON_B, 5000ms);
+        pbf_press_button(context, BUTTON_B, 200ms, 2500ms);
+        pbf_mash_button(context, BUTTON_B, 7000ms);
         context.wait_for_all_requests();
 
         stats.skips++;

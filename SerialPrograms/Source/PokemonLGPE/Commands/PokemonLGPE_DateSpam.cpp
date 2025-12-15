@@ -182,7 +182,8 @@ void verify_date_time_menu_selected(ConsoleHandle& console, JoyconContext& conte
 
 void roll_date_forward_1(JoyconContext& context){
     Milliseconds tv = context->timing_variation();
-    Milliseconds unit = 24ms + tv;
+    //  Slightly slower base unit to make date navigation more forgiving.
+    Milliseconds unit = 40ms + tv;
 
     pbf_press_button(context, BUTTON_A, 2*unit, unit);
     pbf_move_joystick(context, 128, 0, 2*unit, unit);
@@ -203,7 +204,8 @@ void roll_date_backward_N(JoyconContext& context, uint8_t skips){
     }
 
     Milliseconds tv = context->timing_variation();
-    Milliseconds unit = 24ms + tv;
+    //  Slightly slower base unit to make date navigation more forgiving.
+    Milliseconds unit = 40ms + tv;
 
     pbf_press_button(context, BUTTON_A, 2*unit, unit);
 
