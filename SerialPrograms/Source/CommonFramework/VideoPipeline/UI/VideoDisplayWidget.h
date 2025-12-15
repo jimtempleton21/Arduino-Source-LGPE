@@ -27,6 +27,7 @@ class QLineEdit;
 namespace PokemonAutomation{
 
 class VideoDisplayWindow;
+class MouseInspectorStat;
 
 
 //  Interface for forwarding keyboard and focus events from the VideoDisplayWidget to
@@ -149,6 +150,9 @@ private:
 
     VideoSourceFPS m_source_fps;
     VideoDisplayFPS m_display_fps;
+    std::unique_ptr<class MouseInspectorState> m_mouse_state;
+    std::unique_ptr<class MouseCursorStat> m_mouse_cursor_stat;
+    std::unique_ptr<class MouseBoxStat> m_mouse_box_stat;
 };
 
 

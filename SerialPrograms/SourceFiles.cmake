@@ -1575,6 +1575,8 @@ file(GLOB LIBRARY_SOURCES
     Source/PokemonLGPE/Programs/ShinyHunting/PokemonLGPE_LegendaryReset.h
     Source/PokemonLGPE/Programs/TestPrograms/PokemonLGPE_SoundListener.cpp
     Source/PokemonLGPE/Programs/TestPrograms/PokemonLGPE_SoundListener.h
+    Source/PokemonLGPE/Programs/TestPrograms/PokemonLGPE_OverlayTextTester.cpp
+    Source/PokemonLGPE/Programs/TestPrograms/PokemonLGPE_OverlayTextTester.h
     Source/PokemonLZA/Inference/Battles/PokemonLZA_MoveEffectivenessSymbol.cpp
     Source/PokemonLZA/Inference/Battles/PokemonLZA_MoveEffectivenessSymbol.h
     Source/PokemonLZA/Inference/Battles/PokemonLZA_RunFromBattleDetector.cpp

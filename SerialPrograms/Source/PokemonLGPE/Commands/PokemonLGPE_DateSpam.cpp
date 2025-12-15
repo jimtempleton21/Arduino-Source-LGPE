@@ -4,24 +4,554 @@
  * 
  */
 
+#include <algorithm>
+#include <cctype>
+
+#include "Common/Cpp/Color.h"
 #include "Common/Cpp/Time.h"
 #include "CommonFramework/Exceptions/OperationFailedException.h"
 #include "CommonFramework/ImageTools/ImageBoxes.h"
 #include "CommonFramework/ImageTools/ImageStats.h"
+#include "CommonFramework/ImageTypes/ImageViewRGB32.h"
 #include "CommonFramework/VideoPipeline/VideoFeed.h"
 #include "CommonFramework/VideoPipeline/VideoOverlayScopes.h"
+#include "CommonFramework/Language.h"
 #include "CommonTools/Async/InferenceRoutines.h"
+#include "CommonTools/OCR/OCR_RawOCR.h"
 #include "Controllers/SerialPABotBase/Connection/MessageConverter.h"
 #include "NintendoSwitch/Commands/NintendoSwitch_Commands_PushButtons.h"
 #include "NintendoSwitch/Commands/NintendoSwitch_Commands_Superscalar.h"
 #include "NintendoSwitch/Inference/NintendoSwitch_SelectedSettingDetector.h"
 #include "NintendoSwitch/Programs/NintendoSwitch_GameEntry.h"
 #include "NintendoSwitch/Programs/DateSpam/NintendoSwitch_HomeToDateTime.h"
+#include "NintendoSwitch/Inference/NintendoSwitch_ConsoleTypeDetector.h"
 #include "PokemonLGPE_DateSpam.h"
 
 namespace PokemonAutomation{
 namespace NintendoSwitch{
 namespace PokemonLGPE{
+
+// Helper: read and normalize text from a float box.
+static std::string read_box_text_ocr(VideoSnapshot& snapshot, const ImageFloatBox& box){
+    ImageViewRGB32 image = snapshot;
+    ImageViewRGB32 region = extract_box_reference(image, box);
+    std::string text = OCR::ocr_read(Language::English, region);
+
+    std::string cleaned;
+    for (char ch : text){
+        if (ch != '\r' && ch != '\n'){
+            cleaned += ch;
+        }
+    }
+    std::string lowered = cleaned;
+    std::transform(
+        lowered.begin(), lowered.end(), lowered.begin(),
+        [](unsigned char c){ return (char)std::tolower(c); }
+    );
+
+    return lowered;
+}
+
+// Helper: retry logic - back out, verify System Update, navigate to Date and Time.
+static bool retry_navigate_to_date_time_internal(
+    ConsoleHandle& console,
+    JoyconContext& context,
+    VideoOverlaySet& overlays,
+    Milliseconds unit
+){
+    console.log("Retry: Backing out to System menu...", COLOR_YELLOW);
+    pbf_press_button(context, BUTTON_B, unit, 500ms);
+    context.wait_for_all_requests();
+    context.wait_for(500ms);
+
+    VideoSnapshot snapshot = console.video().snapshot();
+    if (!snapshot){
+        console.log("No video during retry.", COLOR_RED);
+        return false;
+    }
+
+    // Check for System Update at top
+    ImageFloatBox system_update_box(0.37, 0.19, 0.16, 0.09);
+    overlays.add(COLOR_BLUE, system_update_box);
+
+    std::string top_lower = read_box_text_ocr(snapshot, system_update_box);
+    console.log("Retry: Top entry OCR (lowercased): \"" + top_lower + "\"");
+
+    bool has_system_word = top_lower.find("system") != std::string::npos;
+    bool has_update_word = top_lower.find("update") != std::string::npos;
+
+    if (!has_system_word || !has_update_word){
+        console.log("Retry: Top entry does NOT look like 'System Update'. Sending 18 UP inputs.", COLOR_RED);
+        for (int i = 0; i < 18; i++){
+            pbf_move_joystick(context, 128, 0, unit, unit);
+        }
+        context.wait_for_all_requests();
+        context.wait_for(500ms);
+        snapshot = console.video().snapshot();
+    }
+
+    // Scroll down to Date and Time
+    console.log("Retry: Scrolling down to find 'Date and Time'...", COLOR_BLUE);
+    pbf_move_joystick(context, 128, 255, unit, unit);
+    pbf_move_joystick(context, 128, 255, unit, unit);
+    context.wait_for_all_requests();
+    pbf_move_joystick(context, 128, 255, 525ms, unit);
+    pbf_move_joystick(context, 128, 255, unit, unit);
+    context.wait_for_all_requests();
+    context.wait_for(500ms);
+
+    snapshot = console.video().snapshot();
+    if (!snapshot){
+        console.log("No video after retry scroll.", COLOR_RED);
+        return false;
+    }
+
+    ImageFloatBox date_time_box(0.37, 0.61, 0.15, 0.10);
+    overlays.add(COLOR_RED, date_time_box);
+
+    std::string dt_lower = read_box_text_ocr(snapshot, date_time_box);
+    console.log("Retry: Date/Time candidate OCR (lowercased): \"" + dt_lower + "\"");
+
+    bool has_date = dt_lower.find("date") != std::string::npos;
+    bool has_time = dt_lower.find("time") != std::string::npos;
+
+    if (has_date && has_time){
+        console.log("Retry: OCR confirmed 'Date and Time'. Pressing A.", COLOR_BLUE);
+        pbf_press_button(context, BUTTON_A, unit, 500ms);
+        context.wait_for_all_requests();
+        return true;
+    }else{
+        console.log("Retry: Failed to find 'Date and Time' after retry.", COLOR_RED);
+        return false;
+    }
+}
+
+void home_to_settings_only(ConsoleHandle& console, JoyconContext& context){
+    console.log("Navigating from home screen to System Settings only...", COLOR_BLUE);
+    
+    // Detect console type
+    ConsoleTypeDetector_Home detector(console);
+    VideoSnapshot snapshot = console.video().snapshot();
+    ConsoleType console_type = detector.detect_only(snapshot);
+    
+    Milliseconds tv = context->timing_variation();
+    Milliseconds unit = 100ms + tv;
+    
+    switch (console_type){
+    case ConsoleType::Switch1:{
+        // Switch1 navigation: Right 3x, Down 2x, Left 1x, A 3x
+        pbf_move_joystick(context, 255, 128, unit, unit);  // Right
+        pbf_move_joystick(context, 255, 128, unit, unit);  // Right
+        pbf_move_joystick(context, 255, 128, unit, unit);  // Right
+        
+        pbf_move_joystick(context, 128, 255, unit, unit);  // Down
+        pbf_move_joystick(context, 128, 255, unit, unit);  // Down
+        
+        pbf_move_joystick(context, 0, 128, unit, unit);    // Left
+        
+        // Press A multiple times to enter System Settings
+        pbf_press_button(context, BUTTON_A, unit, unit);
+        pbf_press_button(context, BUTTON_A, unit, unit);
+        pbf_press_button(context, BUTTON_A, unit, unit);
+        
+        context.wait_for_all_requests();
+        break;
+    }
+    case ConsoleType::Switch2_Unknown:
+    case ConsoleType::Switch2_FW19_International:
+    case ConsoleType::Switch2_FW19_JapanLocked:
+    case ConsoleType::Switch2_FW20_International:
+    case ConsoleType::Switch2_FW20_JapanLocked:{
+        // Switch2 navigation: Right 3x, Down 2x, Left 1x, A 3x
+        // Stop immediately after entering System Settings - OCR will take over from here
+        Milliseconds unit2 = 24ms + tv;
+        
+        pbf_move_joystick(context, 255, 128, 2*unit2, unit2);  // Right
+        pbf_move_joystick(context, 255, 128, 2*unit2, unit2);  // Right
+        pbf_move_joystick(context, 255, 128, 2*unit2, unit2);  // Right
+        
+        pbf_move_joystick(context, 128, 255, 2*unit2, unit2);  // Down
+        pbf_move_joystick(context, 128, 255, 2*unit2, unit2);  // Down
+        
+        pbf_move_joystick(context, 0, 128, 2*unit2, unit2);    // Left
+        
+        // Press A multiple times to enter System Settings
+        pbf_press_button(context, BUTTON_A, 2*unit2, unit2);
+        pbf_press_button(context, BUTTON_A, 2*unit2, unit2);
+        pbf_press_button(context, BUTTON_A, 2*unit2, unit2);
+        
+        // Stop here - OCR navigation will take over
+        context.wait_for_all_requests();
+        break;
+    }
+    default:
+        throw UserSetupError(
+            console.logger(),
+            "Unsupported console type for home_to_settings_only: " + ConsoleType_strings(console_type)
+        );
+    }
+    
+    console.log("Successfully navigated to System Settings.", COLOR_BLUE);
+}
+
+bool navigate_to_date_change_with_ocr(ConsoleHandle& console, JoyconContext& context){
+    console.log("Starting OCR-guided navigation from System Settings to date change menu...", COLOR_BLUE);
+
+    context.wait_for_all_requests();
+    context.wait_for(400ms);
+
+    Milliseconds tv = context->timing_variation();
+    Milliseconds unit = 100ms + tv;
+
+    VideoSnapshot snapshot = console.video().snapshot();
+    if (!snapshot){
+        console.log("No video snapshot available.", COLOR_RED);
+        return false;
+    }
+
+    VideoOverlaySet overlays(console.overlay());
+
+    // Step 1: Check if "System" is already visible, if not scroll to find it, then press A.
+    {
+        console.log("Step 1: Checking left navigation for 'System'...", COLOR_BLUE);
+
+        // First, check if "System" is already visible without scrolling
+        snapshot = console.video().snapshot();
+        if (!snapshot){
+            console.log("No video snapshot available for System check.", COLOR_RED);
+            return false;
+        }
+
+        ImageFloatBox system_box(0.09, 0.74, 0.08, 0.08);
+        overlays.add(COLOR_RED, system_box);
+
+        std::string system_lower = read_box_text_ocr(snapshot, system_box);
+        console.log("System candidate OCR (lowercased): \"" + system_lower + "\"");
+
+        bool has_system = system_lower.find("system") != std::string::npos;
+        
+        // If "System" not found, scroll down to find it
+        if (!has_system){
+            console.log("'System' not found at current position. Scrolling down to find it...", COLOR_BLUE);
+            pbf_move_joystick(context, 128, 255, 2500ms, unit);
+            context.wait_for_all_requests();
+            context.wait_for(500ms);
+
+            snapshot = console.video().snapshot();
+            if (!snapshot){
+                console.log("No video after scrolling to System.", COLOR_RED);
+                return false;
+            }
+
+            system_lower = read_box_text_ocr(snapshot, system_box);
+            console.log("System candidate OCR after scroll (lowercased): \"" + system_lower + "\"");
+            has_system = system_lower.find("system") != std::string::npos;
+        }
+        
+        if (has_system){
+            console.log("OCR says this looks like 'System'. Pressing A to enter System settings.", COLOR_BLUE);
+            pbf_press_button(context, BUTTON_A, unit, 500ms);
+            context.wait_for_all_requests();
+            context.wait_for(500ms);
+
+            // Immediately verify top-right entry text (expected "System Update").
+            snapshot = console.video().snapshot();
+            if (!snapshot){
+                console.log("No video after entering System settings.", COLOR_RED);
+                return false;
+            }
+
+            ImageFloatBox system_update_box(0.37, 0.19, 0.16, 0.09);
+            overlays.add(COLOR_BLUE, system_update_box);
+
+            std::string top_lower = read_box_text_ocr(snapshot, system_update_box);
+            console.log("Top entry candidate OCR (lowercased): \"" + top_lower + "\"");
+
+            bool has_system_word2 = top_lower.find("system") != std::string::npos;
+            bool has_update_word  = top_lower.find("update") != std::string::npos;
+
+            if (!has_system_word2 || !has_update_word){
+                console.log(
+                    "Top entry does NOT look like 'System Update'. "
+                    "Sending 18 rapid UP inputs to reset cursor to the top of the menu.",
+                    COLOR_RED
+                );
+
+                for (int i = 0; i < 18; i++){
+                    pbf_move_joystick(context, 128, 0, unit, unit);
+                }
+                context.wait_for_all_requests();
+                context.wait_for(500ms);
+
+                snapshot = console.video().snapshot();
+                if (snapshot){
+                    std::string after_reset = read_box_text_ocr(snapshot, system_update_box);
+                    console.log("After reset, top entry OCR (lowercased): \"" + after_reset + "\"");
+                }
+            }else{
+                console.log("Top entry OCR looks like 'System Update'. No reset needed.", COLOR_BLUE);
+            }
+        }else{
+            console.log(
+                "OCR does NOT look like 'System'. Cannot proceed safely.",
+                COLOR_RED
+            );
+            return false;
+        }
+    }
+
+    // Step 2: Within System, scroll to "Date and Time" on the right panel and OCR-check it.
+    {
+        console.log("Step 2: Scrolling within System to find 'Date and Time'...", COLOR_BLUE);
+
+        // These timings are adapted from the existing blind navigation.
+        pbf_move_joystick(context, 128, 255, unit, unit);
+        pbf_move_joystick(context, 128, 255, unit, unit);
+        context.wait_for_all_requests();
+        pbf_move_joystick(context, 128, 255, 525ms, unit);
+        pbf_move_joystick(context, 128, 255, unit, unit);
+        context.wait_for_all_requests();
+        context.wait_for(500ms);
+
+        snapshot = console.video().snapshot();
+        if (!snapshot){
+            console.log("No video after scrolling to Date and Time.", COLOR_RED);
+            return false;
+        }
+
+        ImageFloatBox date_time_box(0.37, 0.61, 0.15, 0.10);
+        overlays.add(COLOR_RED, date_time_box);
+
+        std::string dt_lower = read_box_text_ocr(snapshot, date_time_box);
+        console.log("Date/Time candidate OCR (lowercased): \"" + dt_lower + "\"");
+
+        bool has_date = dt_lower.find("date") != std::string::npos;
+        bool has_time = dt_lower.find("time") != std::string::npos;
+
+        if (has_date && has_time){
+            console.log(
+                "OCR says this looks like 'Date and Time'. Pressing A to enter Date and Time menu.",
+                COLOR_BLUE
+            );
+            pbf_press_button(context, BUTTON_A, unit, 500ms);
+            context.wait_for_all_requests();
+            context.wait_for(500ms);
+        }else{
+            console.log(
+                "OCR did NOT clearly find both 'date' and 'time'. Cannot proceed safely.",
+                COLOR_RED
+            );
+            return false;
+        }
+    }
+
+    // Step 3: Sanity checks within Date and Time menu
+    {
+        console.log("Step 3: Performing sanity checks in Date and Time menu...", COLOR_BLUE);
+
+        // Check 1: Verify menu title is "Date and Time"
+        {
+            context.wait_for_all_requests();
+            context.wait_for(500ms);
+            snapshot = console.video().snapshot();
+            if (!snapshot){
+                console.log("No video for menu title check.", COLOR_RED);
+                return false;
+            }
+
+            ImageFloatBox menu_title_box(0.05, 0.03, 0.20, 0.10);
+            overlays.add(COLOR_GREEN, menu_title_box);
+
+            std::string title_lower = read_box_text_ocr(snapshot, menu_title_box);
+            console.log("Menu title OCR (lowercased): \"" + title_lower + "\"");
+
+            bool has_date_title = title_lower.find("date") != std::string::npos;
+            bool has_time_title = title_lower.find("time") != std::string::npos;
+
+            if (!has_date_title || !has_time_title){
+                console.log("Menu title check FAILED. Retrying navigation...", COLOR_RED);
+                if (!retry_navigate_to_date_time_internal(console, context, overlays, unit)){
+                    console.log("Retry failed. Aborting.", COLOR_RED);
+                    return false;
+                }
+                // Re-check after retry
+                context.wait_for_all_requests();
+                context.wait_for(500ms);
+                snapshot = console.video().snapshot();
+                if (!snapshot){
+                    console.log("No video after retry.", COLOR_RED);
+                    return false;
+                }
+                title_lower = read_box_text_ocr(snapshot, menu_title_box);
+                has_date_title = title_lower.find("date") != std::string::npos;
+                has_time_title = title_lower.find("time") != std::string::npos;
+                if (!has_date_title || !has_time_title){
+                    console.log("Menu title still wrong after retry. Aborting.", COLOR_RED);
+                    return false;
+                }
+            }
+            console.log("Menu title check PASSED.", COLOR_BLUE);
+        }
+
+        // Check 2: Verify "Sync Clock Using the Internet" text
+        {
+            snapshot = console.video().snapshot();
+            if (!snapshot){
+                console.log("No video for sync clock text check.", COLOR_RED);
+                return false;
+            }
+
+            ImageFloatBox sync_text_box(0.17, 0.19, 0.45, 0.10);
+            overlays.add(COLOR_MAGENTA, sync_text_box);
+
+            std::string sync_lower = read_box_text_ocr(snapshot, sync_text_box);
+            console.log("Sync clock text OCR (lowercased): \"" + sync_lower + "\"");
+
+            bool has_sync = sync_lower.find("sync") != std::string::npos;
+            bool has_clock = sync_lower.find("clock") != std::string::npos;
+            bool has_internet = sync_lower.find("internet") != std::string::npos;
+
+            if (!has_sync || !has_clock || !has_internet){
+                console.log("Sync clock text check FAILED. Retrying navigation...", COLOR_RED);
+                if (!retry_navigate_to_date_time_internal(console, context, overlays, unit)){
+                    console.log("Retry failed. Aborting.", COLOR_RED);
+                    return false;
+                }
+                // Re-check after retry
+                context.wait_for_all_requests();
+                context.wait_for(500ms);
+                snapshot = console.video().snapshot();
+                if (!snapshot){
+                    console.log("No video after retry.", COLOR_RED);
+                    return false;
+                }
+                sync_lower = read_box_text_ocr(snapshot, sync_text_box);
+                has_sync = sync_lower.find("sync") != std::string::npos;
+                has_clock = sync_lower.find("clock") != std::string::npos;
+                has_internet = sync_lower.find("internet") != std::string::npos;
+                if (!has_sync || !has_clock || !has_internet){
+                    console.log("Sync clock text still wrong after retry. Aborting.", COLOR_RED);
+                    return false;
+                }
+            }
+            console.log("Sync clock text check PASSED.", COLOR_BLUE);
+        }
+
+        // Check 3: Check toggle state and toggle OFF if needed
+        {
+            snapshot = console.video().snapshot();
+            if (!snapshot){
+                console.log("No video for toggle check.", COLOR_RED);
+                return false;
+            }
+
+            ImageFloatBox toggle_box(0.77, 0.20, 0.05, 0.05);
+            overlays.add(COLOR_ORANGE, toggle_box);
+
+            ImageViewRGB32 image = snapshot;
+            ImageStats toggle_stats = image_stats(extract_box_reference(image, toggle_box));
+            
+            // Same logic as DateSpam.cpp: "On" is cyan/teal, "Off" is white
+            bool is_cyan = (toggle_stats.average.g > toggle_stats.average.r + 5) &&
+                          (toggle_stats.average.b >= toggle_stats.average.r);
+            bool is_white = (std::abs(toggle_stats.average.r - toggle_stats.average.g) < 10) &&
+                           (std::abs(toggle_stats.average.r - toggle_stats.average.b) < 10) &&
+                           (std::abs(toggle_stats.average.g - toggle_stats.average.b) < 10);
+            
+            bool toggle_appears_on = is_cyan && !is_white;
+
+            console.log(
+                "Toggle RGB: [" + std::to_string((int)toggle_stats.average.r) + ", " +
+                std::to_string((int)toggle_stats.average.g) + ", " +
+                std::to_string((int)toggle_stats.average.b) + "]  cyan=" +
+                std::string(is_cyan ? "YES" : "NO") + "  white=" +
+                std::string(is_white ? "YES" : "NO") + "  appears_ON=" +
+                std::string(toggle_appears_on ? "YES" : "NO")
+            );
+
+            if (toggle_appears_on){
+                console.log("Toggle is ON (cyan detected, not white). Pressing A to toggle OFF...", COLOR_YELLOW);
+                pbf_press_button(context, BUTTON_A, unit, 600ms);
+                context.wait_for_all_requests();
+                context.wait_for(500ms);
+            }else{
+                console.log("Toggle is already OFF (white or not cyan). No action needed.", COLOR_BLUE);
+            }
+        }
+
+        // Check 4: Scroll down twice, press A, verify "Current Date and Time"
+        {
+            console.log("Scrolling down twice and entering date change menu...", COLOR_BLUE);
+            pbf_move_joystick(context, 128, 255, unit, unit);
+            context.wait_for_all_requests();
+            pbf_move_joystick(context, 128, 255, unit, unit);
+            context.wait_for_all_requests();
+            pbf_press_button(context, BUTTON_A, unit, 500ms);
+            context.wait_for_all_requests();
+            context.wait_for(500ms);
+
+            snapshot = console.video().snapshot();
+            if (!snapshot){
+                console.log("No video for final check.", COLOR_RED);
+                return false;
+            }
+
+            ImageFloatBox current_dt_box(0.01, 0.01, 0.32, 0.10);
+            overlays.add(COLOR_PURPLE, current_dt_box);
+
+            std::string current_dt_lower = read_box_text_ocr(snapshot, current_dt_box);
+            console.log("Final check OCR (lowercased): \"" + current_dt_lower + "\"");
+
+            bool has_current = current_dt_lower.find("current") != std::string::npos;
+            bool has_date_final = current_dt_lower.find("date") != std::string::npos;
+            bool has_time_final = current_dt_lower.find("time") != std::string::npos;
+            bool has_zone = current_dt_lower.find("zone") != std::string::npos;
+
+            if (!has_current || !has_date_final || !has_time_final || has_zone){
+                if (has_zone){
+                    console.log("Final check FAILED: Detected 'Time Zone' instead of 'Current Date and Time'. Retrying navigation...", COLOR_RED);
+                }else{
+                    console.log("Final check FAILED: Missing required words. Retrying navigation...", COLOR_RED);
+                }
+                // Back out twice (from date change menu, then from Date and Time menu)
+                pbf_press_button(context, BUTTON_B, unit, 500ms);
+                context.wait_for_all_requests();
+                if (!retry_navigate_to_date_time_internal(console, context, overlays, unit)){
+                    console.log("Retry failed. Aborting.", COLOR_RED);
+                    return false;
+                }
+                // Try the scroll + A again
+                pbf_move_joystick(context, 128, 255, unit, unit);
+                context.wait_for_all_requests();
+                pbf_move_joystick(context, 128, 255, unit, unit);
+                context.wait_for_all_requests();
+                pbf_press_button(context, BUTTON_A, unit, 500ms);
+                context.wait_for_all_requests();
+                context.wait_for(500ms);
+
+                snapshot = console.video().snapshot();
+                if (snapshot){
+                    current_dt_lower = read_box_text_ocr(snapshot, current_dt_box);
+                    has_current = current_dt_lower.find("current") != std::string::npos;
+                    has_date_final = current_dt_lower.find("date") != std::string::npos;
+                    has_time_final = current_dt_lower.find("time") != std::string::npos;
+                    has_zone = current_dt_lower.find("zone") != std::string::npos;
+                    if (!has_current || !has_date_final || !has_time_final || has_zone){
+                        if (has_zone){
+                            console.log("Final check still failed after retry: Detected 'Time Zone'. Aborting.", COLOR_RED);
+                        }else{
+                            console.log("Final check still failed after retry: Missing required words. Aborting.", COLOR_RED);
+                        }
+                        return false;
+                    }
+                }
+            }
+            console.log("SUCCESS: All OCR checks passed! Ready for date change.", COLOR_GREEN);
+        }
+    }
+
+    return true;
+}
 
 void verify_date_time_menu_selected(ConsoleHandle& console, JoyconContext& context){
     // Comprehensive verification: ensure we're on "Date and Time" menu item AND Sync Clock is OFF
@@ -34,13 +564,45 @@ void verify_date_time_menu_selected(ConsoleHandle& console, JoyconContext& conte
     Milliseconds tv = context->timing_variation();
     Milliseconds unit = 100ms + tv;
     
-    // STEP 1: Check and disable "Synchronize Clock via Internet" if it's ON
-    console.log("Step 1: Checking 'Synchronize Clock via Internet' status...");
     VideoSnapshot snapshot = console.video().snapshot();
     if (!snapshot){
         console.log("WARNING: No video available. Proceeding blind...", COLOR_RED);
         return;
     }
+
+    // PRE-CHECK: Ensure left navigation has "System" selected.
+    {
+        ImageFloatBox system_label_box(0.09, 0.74, 0.08, 0.08);
+        ImageViewRGB32 system_region = extract_box_reference(snapshot, system_label_box);
+
+        std::string system_text = OCR::ocr_read(Language::English, system_region);
+        std::string system_clean;
+        for (char ch : system_text){
+            if (ch != '\r' && ch != '\n'){
+                system_clean += ch;
+            }
+        }
+        std::string system_lower = system_clean;
+        std::transform(
+            system_lower.begin(), system_lower.end(), system_lower.begin(),
+            [](unsigned char c){ return (char)std::tolower(c); }
+        );
+
+        bool has_system_word = system_lower.find("system") != std::string::npos;
+
+        console.log("System label OCR: \"" + system_clean + "\"");
+
+        if (!has_system_word){
+            console.log(
+                "System pre-check FAILED: expected 'System' selected. "
+                "Not proceeding to date/time manipulation.", COLOR_RED
+            );
+            return;
+        }
+    }
+    
+    // STEP 1: Check and disable "Synchronize Clock via Internet" if it's ON
+    console.log("Step 1: Checking 'Synchronize Clock via Internet' status...");
     
     // Add visual overlay boxes so you can see where we're looking
     VideoOverlaySet overlays(console.overlay());
@@ -85,7 +647,7 @@ void verify_date_time_menu_selected(ConsoleHandle& console, JoyconContext& conte
                 ", Appears ON: " + std::string(sync_appears_on ? "YES" : "NO"));
     
     if (sync_appears_on){
-        console.log("DETECTED: 'Synchronize Clock via Internet' is ON. Disabling it...", COLOR_YELLOW);
+        console.log("DETECTED: 'Synchronize Clock via Internet' is ON. Preparing to disable it with OCR safety check...", COLOR_YELLOW);
         
         // Strategy: First scroll down to bottom (Date and Time), then scroll up exactly 2 times to Sync Clock
         // This ensures we know exactly where we are
@@ -96,17 +658,54 @@ void verify_date_time_menu_selected(ConsoleHandle& console, JoyconContext& conte
             context.wait_for(Milliseconds(100));
         }
         
-        console.log("Now navigating UP to 'Synchronize Clock via Internet'...");
+        console.log("Now navigating UP towards 'Synchronize Clock via Internet' with OCR verification...");
         // From "Date and Time" (bottom), go up 2 times to reach "Synchronize Clock" (top)
-        pbf_move_joystick(context, 128, 0, unit, unit);  // Up to Time Zone
-        context.wait_for_all_requests();
-        context.wait_for(Milliseconds(250));
-        pbf_move_joystick(context, 128, 0, unit, unit);  // Up to Synchronize Clock
-        context.wait_for_all_requests();
-        context.wait_for(Milliseconds(400));
+        for (int step = 0; step < 2; step++){
+            pbf_move_joystick(context, 128, 0, unit, unit);  // Up
+            context.wait_for_all_requests();
+            context.wait_for(Milliseconds(300));
+
+            // After each move, OCR the menu label in the calibrated box and confirm.
+            VideoSnapshot step_snapshot = console.video().snapshot();
+            if (!step_snapshot){
+                console.log("WARNING: No video during OCR step navigation. Skipping A-press safeguard this step.", COLOR_RED);
+                continue;
+            }
+
+            // This box matches the dev tester coordinates over the menu text.
+            ImageFloatBox menu_label_box(0.38, 0.59, 0.14, 0.06);
+            ImageViewRGB32 menu_region = extract_box_reference(step_snapshot, menu_label_box);
+            std::string ocr_text = OCR::ocr_read(Language::English, menu_region);
+
+            std::string cleaned;
+            for (char ch : ocr_text){
+                if (ch != '\r' && ch != '\n'){
+                    cleaned += ch;
+                }
+            }
+
+            std::string lowered = cleaned;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+
+            console.log("OCR menu text after scroll step " + std::to_string(step + 1) + ": \"" + cleaned + "\"");
+
+            bool looks_like_sync_option =
+                lowered.find("synchron") != std::string::npos ||
+                lowered.find("sync") != std::string::npos ||
+                lowered.find("internet") != std::string::npos;
+
+            if (step == 1){
+                // On the final step, we require a positive OCR match before pressing A.
+                if (!looks_like_sync_option){
+                    console.log("OCR safeguard: expected 'Synchronize Clock via Internet' but saw \"" + cleaned + "\". NOT pressing A.", COLOR_RED);
+                    // Bail out early instead of risking a wrong press.
+                    return;
+                }
+            }
+        }
         
-        // Press A to toggle it OFF
-        console.log("Pressing A to toggle OFF...");
+        // At this point OCR believes we're on the correct menu item.
+        console.log("OCR confirmed we're on 'Synchronize Clock via Internet'. Pressing A to toggle OFF...");
         pbf_press_button(context, BUTTON_A, unit, unit);
         context.wait_for_all_requests();
         context.wait_for(Milliseconds(600));  // Wait for toggle animation
@@ -147,6 +746,39 @@ void verify_date_time_menu_selected(ConsoleHandle& console, JoyconContext& conte
     // Final verification with visual boxes to see where menu items actually are
     snapshot = console.video().snapshot();
     if (snapshot){
+        // OCR check that the highlighted right-side menu item is "Date and Time".
+        {
+            ImageFloatBox date_time_label_box(0.38, 0.59, 0.14, 0.06);
+            ImageViewRGB32 dt_region = extract_box_reference(snapshot, date_time_label_box);
+
+            std::string dt_text = OCR::ocr_read(Language::English, dt_region);
+            std::string dt_clean;
+            for (char ch : dt_text){
+                if (ch != '\r' && ch != '\n'){
+                    dt_clean += ch;
+                }
+            }
+
+            std::string dt_lower = dt_clean;
+            std::transform(
+                dt_lower.begin(), dt_lower.end(), dt_lower.begin(),
+                [](unsigned char c){ return (char)std::tolower(c); }
+            );
+
+            bool has_date = dt_lower.find("date") != std::string::npos;
+            bool has_time = dt_lower.find("time") != std::string::npos;
+
+            console.log("Date/Time label OCR: \"" + dt_clean + "\"");
+
+            if (!has_date || !has_time){
+                console.log(
+                    "Date/Time pre-check FAILED: expected 'Date and Time' highlighted. "
+                    "Not proceeding to roll date.", COLOR_RED
+                );
+                return;
+            }
+        }
+
         // Show boxes at different Y positions to find where menu items are
         // These boxes cover the LEFT side where menu item TEXT appears (not status text)
         ImageFloatBox menu_check_box1(0.15, 0.15, 0.40, 0.05);  // Very top

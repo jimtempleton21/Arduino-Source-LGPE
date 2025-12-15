@@ -17,6 +17,7 @@
 #include "Programs/ShinyHunting/PokemonLGPE_LegendaryReset.h"
 
 #include "Programs/TestPrograms/PokemonLGPE_SoundListener.h"
+#include "Programs/TestPrograms/PokemonLGPE_OverlayTextTester.h"
 
 namespace PokemonAutomation{
 namespace NintendoSwitch{
@@ -42,8 +43,10 @@ std::vector<PanelEntry> PanelListFactory::make_panels() const{
     ret.emplace_back(make_single_switch_program<GiftReset_Descriptor, GiftReset>());
     ret.emplace_back(make_single_switch_program<LegendaryReset_Descriptor, LegendaryReset>());
 
+    ret.emplace_back("---- Developer Tools ----");
+    ret.emplace_back(make_single_switch_program<OverlayTextTester_Descriptor, OverlayTextTester>());
+    
     if (PreloadSettings::instance().DEVELOPER_MODE){
-        ret.emplace_back("---- Developer Tools ----");
         ret.emplace_back(make_single_switch_program<SoundListener_Descriptor, SoundListener>());
     }
 

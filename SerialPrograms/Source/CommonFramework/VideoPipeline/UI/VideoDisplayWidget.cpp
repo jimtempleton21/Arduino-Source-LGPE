@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <mutex>
 #include "Common/Cpp/PrettyPrint.h"
 #include "Common/Qt/Redispatch.h"
 #include "VideoDisplayWidget.h"
@@ -20,6 +21,136 @@
 
 namespace PokemonAutomation{
 
+
+
+// Shared state for mouse tracking
+class MouseInspectorState : public VideoOverlay::MouseListener{
+public:
+    MouseInspectorState(VideoOverlaySession& overlay)
+        : m_overlay(overlay)
+    {
+        m_overlay.add_mouse_listener(*this);
+    }
+    virtual ~MouseInspectorState(){
+        m_overlay.remove_mouse_listener(*this);
+    }
+
+    // MouseListener implementation
+    virtual void on_mouse_press(double x, double y) override{
+        std::lock_guard<std::mutex> lg(m_lock);
+        m_mouse_x = x;
+        m_mouse_y = y;
+        m_dragging = true;
+        m_has_box = true;
+        m_box_start_x = x;
+        m_box_start_y = y;
+        m_box_end_x = x;
+        m_box_end_y = y;
+    }
+    virtual void on_mouse_release(double x, double y) override{
+        std::lock_guard<std::mutex> lg(m_lock);
+        m_mouse_x = x;
+        m_mouse_y = y;
+        m_dragging = false;
+        m_box_end_x = x;
+        m_box_end_y = y;
+    }
+    virtual void on_mouse_move(double x, double y) override{
+        std::lock_guard<std::mutex> lg(m_lock);
+        m_mouse_x = x;
+        m_mouse_y = y;
+        if (m_dragging){
+            m_box_end_x = x;
+            m_box_end_y = y;
+        }
+    }
+
+    struct Snapshot{
+        double mouse_x = -1.0;
+        double mouse_y = -1.0;
+        bool has_box = false;
+        double box_start_x = 0.0;
+        double box_start_y = 0.0;
+        double box_end_x = 0.0;
+        double box_end_y = 0.0;
+    };
+
+    Snapshot get_snapshot(){
+        std::lock_guard<std::mutex> lg(m_lock);
+        Snapshot snap;
+        snap.mouse_x = m_mouse_x;
+        snap.mouse_y = m_mouse_y;
+        snap.has_box = m_has_box;
+        snap.box_start_x = m_box_start_x;
+        snap.box_start_y = m_box_start_y;
+        snap.box_end_x = m_box_end_x;
+        snap.box_end_y = m_box_end_y;
+        return snap;
+    }
+
+private:
+    VideoOverlaySession& m_overlay;
+    std::mutex m_lock;
+
+    double m_mouse_x = -1.0;
+    double m_mouse_y = -1.0;
+
+    bool m_dragging = false;
+    bool m_has_box = false;
+    double m_box_start_x = 0.0;
+    double m_box_start_y = 0.0;
+    double m_box_end_x   = 0.0;
+    double m_box_end_y   = 0.0;
+};
+
+// Stat for cursor position (first line)
+class MouseCursorStat : public OverlayStat{
+public:
+    MouseCursorStat(MouseInspectorState& state) : m_state(state) {}
+    virtual OverlayStatSnapshot get_current() override{
+        auto snap = m_state.get_snapshot();
+        OverlayStatSnapshot result;
+        if (snap.mouse_x < 0 || snap.mouse_y < 0){
+            result.text = "Click: (n/a)";
+        } else {
+            result.text = "Click: (" +
+                tostr_fixed(snap.mouse_x, 2) + ", " +
+                tostr_fixed(snap.mouse_y, 2) + ")";
+        }
+        result.color = COLOR_WHITE;
+        return result;
+    }
+private:
+    MouseInspectorState& m_state;
+};
+
+// Stat for box coordinates (second line)
+class MouseBoxStat : public OverlayStat{
+public:
+    MouseBoxStat(MouseInspectorState& state) : m_state(state) {}
+    virtual OverlayStatSnapshot get_current() override{
+        auto snap = m_state.get_snapshot();
+        OverlayStatSnapshot result;
+        if (!snap.has_box){
+            result.text = "Box: (none)";
+        } else {
+            double x0 = std::min(snap.box_start_x, snap.box_end_x);
+            double y0 = std::min(snap.box_start_y, snap.box_end_y);
+            double w  = std::abs(snap.box_end_x - snap.box_start_x);
+            double h  = std::abs(snap.box_end_y - snap.box_start_y);
+
+            result.text = "Box: (" +
+                tostr_fixed(x0, 2) + ", " +
+                tostr_fixed(y0, 2) + "; " +
+                tostr_fixed(w, 2) + " x " +
+                tostr_fixed(h, 2) + ")";
+        }
+        result.color = COLOR_WHITE;
+        return result;
+    }
+private:
+    MouseInspectorState& m_state;
+};
 
 
 VideoDisplayWidget::VideoDisplayWidget(
@@ -39,6 +170,9 @@ VideoDisplayWidget::VideoDisplayWidget(
     , m_underlay(new QWidget(this))
     , m_source_fps(*this)
     , m_display_fps(*this)
+    , m_mouse_state(std::make_unique<MouseInspectorState>(overlay))
+    , m_mouse_cursor_stat(std::make_unique<MouseCursorStat>(*m_mouse_state))
+    , m_mouse_box_stat(std::make_unique<MouseBoxStat>(*m_mouse_state))
 {
     this->add_widget(*m_overlay);
 
@@ -116,6 +250,8 @@ VideoDisplayWidget::VideoDisplayWidget(
 
     overlay.add_stat(m_source_fps);
     overlay.add_stat(m_display_fps);
+    overlay.add_stat(*m_mouse_cursor_stat);
+    overlay.add_stat(*m_mouse_box_stat);
 
     video_session.add_state_listener(*this);
 }
@@ -143,6 +279,8 @@ VideoDisplayWidget::~VideoDisplayWidget(){
 
     //  Close the window popout first since it holds references to this class.
     move_back_from_window();
+    m_overlay_session.remove_stat(*m_mouse_box_stat);
+    m_overlay_session.remove_stat(*m_mouse_cursor_stat);
     m_overlay_session.remove_stat(m_display_fps);
     m_overlay_session.remove_stat(m_source_fps);
     delete m_underlay;

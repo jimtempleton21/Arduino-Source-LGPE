@@ -4,11 +4,21 @@
  *
  */
 
-//#include "CommonFramework/Exceptions/OperationFailedException.h"
+#include <algorithm>
+#include <cctype>
+#include <map>
+#include <string>
+#include "Common/Cpp/Color.h"
+#include "CommonFramework/Exceptions/OperationFailedException.h"
+#include "CommonFramework/ImageTools/ImageBoxes.h"
+#include "CommonFramework/ImageTypes/ImageViewRGB32.h"
+#include "CommonFramework/Language.h"
 #include "CommonFramework/Notifications/ProgramNotifications.h"
 #include "CommonFramework/ProgramStats/StatsTracking.h"
-//#include "CommonFramework/VideoPipeline/VideoFeed.h"
+#include "CommonFramework/VideoPipeline/VideoFeed.h"
+#include "CommonFramework/VideoPipeline/VideoOverlayScopes.h"
 //#include "CommonTools/Async/InferenceRoutines.h"
+#include "CommonTools/OCR/OCR_RawOCR.h"
 #include "CommonTools/StartupChecks/VideoResolutionCheck.h"
 #include "NintendoSwitch/NintendoSwitch_Settings.h"
 #include "NintendoSwitch/Commands/NintendoSwitch_Commands_PushButtons.h"
@@ -47,6 +57,60 @@ struct DailyItemFarmer_Descriptor::Stats : public StatsTracker{
     }
     std::atomic<uint64_t>& skips;
 };
+
+// Helper: read and normalize text from a float box (non-blocking OCR)
+static std::string read_item_text_ocr(VideoSnapshot& snapshot, const ImageFloatBox& box){
+    if (!snapshot){
+        return "";
+    }
+    
+    ImageViewRGB32 image = snapshot;
+    ImageViewRGB32 region = extract_box_reference(image, box);
+    std::string text = OCR::ocr_read(Language::English, region);
+
+    std::string cleaned;
+    for (char ch : text){
+        if (ch != '\r' && ch != '\n'){
+            cleaned += ch;
+        }
+    }
+    std::string lowered = cleaned;
+    std::transform(
+        lowered.begin(), lowered.end(), lowered.begin(),
+        [](unsigned char c){ return (char)std::tolower(c); }
+    );
+
+    return lowered;
+}
+
+// Helper: extract item name from OCR text (e.g., "You found a Rare Candy!" -> "rare candy")
+static std::string extract_item_name(const std::string& ocr_text){
+    // Common patterns: "You found a [Item]!", "You got a [Item]!", "Found [Item]!", etc.
+    std::string lower = ocr_text;
+    
+    // Remove common prefixes
+    size_t found_pos = std::string::npos;
+    std::vector<std::string> prefixes = {
+        "you found a ", "you found ", "you got a ", "you got ", 
+        "found a ", "found ", "got a ", "got ", "received a ", "received "
+    };
+    
+    for (const auto& prefix : prefixes){
+        found_pos = lower.find(prefix);
+        if (found_pos != std::string::npos){
+            lower = lower.substr(found_pos + prefix.length());
+            break;
+        }
+    }
+    
+    // Remove trailing punctuation and whitespace
+    while (!lower.empty() && (lower.back() == '!' || lower.back() == '.' || 
+                              lower.back() == '?' || lower.back() == ' ' || lower.back() == '\t')){
+        lower.pop_back();
+    }
+    
+    return lower;
+}
 std::unique_ptr<StatsTracker> DailyItemFarmer_Descriptor::make_stats() const{
     return std::unique_ptr<StatsTracker>(new Stats());
 }
@@ -181,10 +245,19 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
     context.wait_for_all_requests();
     context.wait_for(1500ms);
 
-    home_to_date_time(env.console, context, true);
+    // Navigate from home to System Settings only (stops at System Settings menu)
+    home_to_settings_only(env.console, context);
     
-    // Verify "Date and Time" menu item is selected before rolling date
-    verify_date_time_menu_selected(env.console, context);
+    env.log("About to call navigate_to_date_change_with_ocr...", COLOR_BLUE);
+    
+    // OCR-guided navigation from System Settings to date change menu with full sanity checks
+    if (!navigate_to_date_change_with_ocr(env.console, context)){
+        throw OperationFailedException(
+            ErrorReport::SEND_ERROR_REPORT,
+            "Failed to navigate to date change menu using OCR. Aborting to prevent date manipulation errors.",
+            env.console
+        );
+    }
 
     env.log("Rolling date back.");
     roll_date_backward_N(context, MAX_YEAR);
@@ -199,11 +272,52 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
     context.wait_for_all_requests();
 
     env.log("Starting pickup loop.");
+    
+    // Track item counts for this run
+    std::map<std::string, uint32_t> item_counts;
+    
     for (uint32_t count = 0; count < ATTEMPTS; count++) {
         env.log("Pick up item.");
 
         pbf_mash_button(context, BUTTON_A, 5000ms);
         context.wait_for_all_requests();
+        
+        // Non-blocking OCR: Read item pickup text
+        {
+            context.wait_for(500ms);  // Brief wait for text to appear
+            VideoSnapshot snapshot = env.console.video().snapshot();
+            
+            if (snapshot){
+                ImageFloatBox item_text_box(0.19, 0.77, 0.62, 0.20);
+                VideoOverlaySet overlays(env.console.overlay());
+                overlays.add(COLOR_CYAN, item_text_box);
+                
+                std::string ocr_text = read_item_text_ocr(snapshot, item_text_box);
+                env.log("Item pickup OCR text: \"" + ocr_text + "\"", COLOR_BLUE);
+                
+                if (!ocr_text.empty()){
+                    std::string item_name = extract_item_name(ocr_text);
+                    
+                    if (!item_name.empty()){
+                        item_counts[item_name]++;
+                        uint32_t current_count = item_counts[item_name];
+                        
+                        env.log(
+                            "Item detected: \"" + item_name + "\" - " + 
+                            std::to_string(current_count) + " found so far (loop " + 
+                            std::to_string(count + 1) + " of " + std::to_string(ATTEMPTS) + ")",
+                            COLOR_GREEN
+                        );
+                    }else{
+                        env.log("Could not extract item name from OCR text.", COLOR_YELLOW);
+                    }
+                }else{
+                    env.log("OCR returned empty text.", COLOR_YELLOW);
+                }
+            }else{
+                env.log("No video snapshot available for OCR.", COLOR_YELLOW);
+            }
+        }
 
         start_local_trade(env, context);
 
@@ -220,10 +334,16 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
         context.wait_for(1500ms);
 #endif
 
-        home_to_date_time(env.console, context, true);
+        // Navigate from home to System Settings only (stops at System Settings menu)
+        home_to_settings_only(env.console, context);
         
-        // Verify "Date and Time" menu item is selected before rolling date
-        verify_date_time_menu_selected(env.console, context);
+        env.log("About to call navigate_to_date_change_with_ocr (loop iteration)...", COLOR_BLUE);
+        
+        // OCR-guided navigation from System Settings to date change menu with full sanity checks
+        if (!navigate_to_date_change_with_ocr(env.console, context)){
+            env.log("Failed to navigate to date change menu using OCR. Skipping this iteration.", COLOR_RED);
+            continue;  // Skip this iteration and try again
+        }
 
         if (year >= MAX_YEAR){
             env.log("Rolling date back.");
