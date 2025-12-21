@@ -18,6 +18,7 @@
 #include "CommonFramework/Language.h"
 #include "CommonTools/Async/InferenceRoutines.h"
 #include "CommonTools/OCR/OCR_RawOCR.h"
+#include "CommonTools/Images/ImageFilter.h"
 #include "Controllers/SerialPABotBase/Connection/MessageConverter.h"
 #include "NintendoSwitch/Commands/NintendoSwitch_Commands_PushButtons.h"
 #include "NintendoSwitch/Commands/NintendoSwitch_Commands_Superscalar.h"
@@ -35,10 +36,48 @@ namespace PokemonLGPE{
 static std::string read_box_text_ocr(VideoSnapshot& snapshot, const ImageFloatBox& box){
     ImageViewRGB32 image = snapshot;
     ImageViewRGB32 region = extract_box_reference(image, box);
-    std::string text = OCR::ocr_read(Language::English, region);
+    
+    // Try multiple filters to improve OCR accuracy (black and white text)
+    std::vector<std::pair<uint32_t, uint32_t>> filters{
+        {0xff000000, 0xff404040},  // Black text filter
+        {0xff000000, 0xff606060},  // Dark gray text filter
+        {0xff808080, 0xffffffff},  // White/light text filter
+        {0xffa0a0a0, 0xffffffff},  // Light gray to white filter
+    };
+    
+    std::string best_text;
+    size_t best_text_length = 0;
+    
+    for (const auto& filter : filters){
+        size_t text_pixels;
+        ImageRGB32 processed = to_blackwhite_rgb32_range(
+            text_pixels, region,
+            false,  // in_range_black = false means range becomes white, rest black
+            filter.first, filter.second
+        );
+        
+        // Check if we have a reasonable amount of text pixels (between 2% and 50% of image)
+        double text_ratio = 1.0 - (double)text_pixels / (region.width() * region.height());
+        if (text_ratio < 0.02 || text_ratio > 0.50){
+            continue;  // Skip filters with too little or too much text
+        }
+        
+        std::string text = OCR::ocr_read(Language::English, processed);
+        
+        // Keep the longest non-empty result
+        if (text.length() > best_text_length){
+            best_text = text;
+            best_text_length = text.length();
+        }
+    }
+    
+    // If no filtered result worked, try raw OCR as fallback
+    if (best_text.empty()){
+        best_text = OCR::ocr_read(Language::English, region);
+    }
 
     std::string cleaned;
-    for (char ch : text){
+    for (char ch : best_text){
         if (ch != '\r' && ch != '\n'){
             cleaned += ch;
         }
@@ -486,9 +525,11 @@ bool navigate_to_date_change_with_ocr(ConsoleHandle& console, JoyconContext& con
             context.wait_for_all_requests();
             pbf_move_joystick(context, 128, 255, unit, unit);
             context.wait_for_all_requests();
-            pbf_press_button(context, BUTTON_A, unit, 500ms);
+            // Use default timing for entering date change menu (no extra delays)
+            pbf_press_button(context, BUTTON_A, unit, unit);
             context.wait_for_all_requests();
-            context.wait_for(500ms);
+            // Minimal wait for OCR verification only
+            context.wait_for(200ms);
 
             snapshot = console.video().snapshot();
             if (!snapshot){
@@ -525,9 +566,11 @@ bool navigate_to_date_change_with_ocr(ConsoleHandle& console, JoyconContext& con
                 context.wait_for_all_requests();
                 pbf_move_joystick(context, 128, 255, unit, unit);
                 context.wait_for_all_requests();
-                pbf_press_button(context, BUTTON_A, unit, 500ms);
+                // Use default timing for entering date change menu (no extra delays)
+                pbf_press_button(context, BUTTON_A, unit, unit);
                 context.wait_for_all_requests();
-                context.wait_for(500ms);
+                // Minimal wait for OCR verification only
+                context.wait_for(200ms);
 
                 snapshot = console.video().snapshot();
                 if (snapshot){
@@ -817,7 +860,6 @@ void roll_date_forward_1(JoyconContext& context){
     //  Slightly slower base unit to make date navigation more forgiving.
     Milliseconds unit = 40ms + tv;
 
-    pbf_press_button(context, BUTTON_A, 2*unit, unit);
     pbf_move_joystick(context, 128, 0, 2*unit, unit);
     pbf_press_button(context, BUTTON_A, 2*unit, unit);
 
@@ -839,7 +881,6 @@ void roll_date_backward_N(JoyconContext& context, uint8_t skips){
     //  Slightly slower base unit to make date navigation more forgiving.
     Milliseconds unit = 40ms + tv;
 
-    pbf_press_button(context, BUTTON_A, 2*unit, unit);
 
     for (uint8_t c = 0; c < skips - 1; c++){
         pbf_move_joystick(context, 128, 255, 2*unit, unit);

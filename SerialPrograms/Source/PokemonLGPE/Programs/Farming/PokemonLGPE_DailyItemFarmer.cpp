@@ -9,6 +9,7 @@
 #include <map>
 #include <string>
 #include "Common/Cpp/Color.h"
+#include "Common/Cpp/PrettyPrint.h"
 #include "CommonFramework/Exceptions/OperationFailedException.h"
 #include "CommonFramework/ImageTools/ImageBoxes.h"
 #include "CommonFramework/ImageTypes/ImageViewRGB32.h"
@@ -56,6 +57,121 @@ struct DailyItemFarmer_Descriptor::Stats : public StatsTracker{
         m_display_order.emplace_back("Skips");
     }
     std::atomic<uint64_t>& skips;
+    
+    // Track item counts - items are added dynamically as they're discovered
+    void add_item(const std::string& item_name){
+        std::string stat_key = "Item: " + item_name;
+        if (m_stats.find(stat_key) == m_stats.end()){
+            // First time seeing this item - add to display order
+            // Create a copy for Stat constructor (it requires rvalue)
+            std::string stat_key_copy = stat_key;
+            m_display_order.emplace_back(Stat(std::move(stat_key_copy), HIDDEN_IF_ZERO));
+        }
+        m_stats[stat_key]++;
+    }
+    
+    // Get item count for logging
+    uint64_t get_item_count(const std::string& item_name) const{
+        std::string stat_key = "Item: " + item_name;
+        auto iter = m_stats.find(stat_key);
+        if (iter != m_stats.end()){
+            return iter->second.load(std::memory_order_relaxed);
+        }
+        return 0;
+    }
+    
+    // Override to_str to format items nicely (show item name without "Item: " prefix)
+    virtual std::string to_str(PrintMode mode) const override{
+        // Get base stats string (Skips, etc.)
+        std::map<std::string, uint64_t> stats;
+        for (const auto& item : m_stats){
+            // Skip item stats for now - we'll format them separately
+            if (item.first.find("Item: ") == 0){
+                continue;
+            }
+            stats[item.first] += item.second.load(std::memory_order_relaxed);
+        }
+        
+        std::string str;
+        for (const Stat& stat : m_display_order){
+            // Skip item stats in base loop
+            if (stat.label.find("Item: ") == 0){
+                continue;
+            }
+            
+            auto iter = stats.find(stat.label);
+            uint64_t count = 0;
+            if (iter != stats.end()){
+                count += iter->second;
+            }
+            
+            switch (stat.display_mode){
+            case ALWAYS_VISIBLE:
+                break;
+            case HIDDEN_IF_ZERO:
+                if (count == 0){
+                    continue;
+                }else{
+                    break;
+                }
+            case ALWAYS_HIDDEN:
+                switch (mode){
+                case DUMP:
+                    break;
+                case DISPLAY_ON_SCREEN:
+                    continue;
+                case SAVE_TO_STATS_FILE:
+                    if (count == 0){
+                        continue;
+                    }else{
+                        break;
+                    }
+                }
+            }
+            
+            if (!str.empty()){
+                str += " - ";
+            }
+            str += stat.label;
+            str += ": ";
+            str += tostr_u_commas(count);
+        }
+        
+        // Now add items in a nice format
+        std::vector<std::pair<std::string, uint64_t>> items;
+        for (const Stat& stat : m_display_order){
+            if (stat.label.find("Item: ") == 0){
+                auto iter = m_stats.find(stat.label);
+                if (iter != m_stats.end()){
+                    uint64_t count = iter->second.load(std::memory_order_relaxed);
+                    if (mode == DISPLAY_ON_SCREEN && stat.display_mode == HIDDEN_IF_ZERO && count == 0){
+                        continue;
+                    }
+                    if (mode == SAVE_TO_STATS_FILE && stat.display_mode == ALWAYS_HIDDEN && count == 0){
+                        continue;
+                    }
+                    std::string item_name = stat.label.substr(6); // Remove "Item: " prefix
+                    items.emplace_back(item_name, count);
+                }
+            }
+        }
+        
+        // Format items nicely
+        if (!items.empty()){
+            if (!str.empty()){
+                str += " - ";
+            }
+            str += "Items: ";
+            for (size_t i = 0; i < items.size(); i++){
+                if (i > 0){
+                    str += ", ";
+                }
+                str += "(" + tostr_u_commas(items[i].second) + ")";
+            }
+        }
+        
+        return str;
+    }
 };
 
 // Helper: read and normalize text from a float box (non-blocking OCR)
@@ -81,6 +197,26 @@ static std::string read_item_text_ocr(VideoSnapshot& snapshot, const ImageFloatB
     );
 
     return lowered;
+}
+
+// Helper: check if OCR text looks like an item pickup message
+static bool is_item_pickup_message(const std::string& ocr_text){
+    if (ocr_text.empty()){
+        return false;
+    }
+    
+    // Check for keywords that appear in item pickup messages
+    std::vector<std::string> keywords = {
+        "found", "got", "received", "picked up", "obtained"
+    };
+    
+    for (const auto& keyword : keywords){
+        if (ocr_text.find(keyword) != std::string::npos){
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 // Helper: extract item name from OCR text (e.g., "You found a Rare Candy!" -> "rare candy")
@@ -273,49 +409,31 @@ void DailyItemFarmer::program(SingleSwitchProgramEnvironment& env, CancellableSc
 
     env.log("Starting pickup loop.");
     
-    // Track item counts for this run
-    std::map<std::string, uint32_t> item_counts;
-    
     for (uint32_t count = 0; count < ATTEMPTS; count++) {
         env.log("Pick up item.");
 
         pbf_mash_button(context, BUTTON_A, 5000ms);
         context.wait_for_all_requests();
         
-        // Non-blocking OCR: Read item pickup text
+        // Non-blocking OCR: Read item pickup text (silent - only for counting)
         {
             context.wait_for(500ms);  // Brief wait for text to appear
             VideoSnapshot snapshot = env.console.video().snapshot();
             
             if (snapshot){
-                ImageFloatBox item_text_box(0.19, 0.77, 0.62, 0.20);
-                VideoOverlaySet overlays(env.console.overlay());
-                overlays.add(COLOR_CYAN, item_text_box);
+                ImageFloatBox item_text_box(0.20, 0.81, 0.55, 0.13);
                 
                 std::string ocr_text = read_item_text_ocr(snapshot, item_text_box);
-                env.log("Item pickup OCR text: \"" + ocr_text + "\"", COLOR_BLUE);
                 
-                if (!ocr_text.empty()){
-                    std::string item_name = extract_item_name(ocr_text);
+                // Only count if OCR text actually looks like an item pickup message
+                // This prevents counting when no item was picked up
+                if (is_item_pickup_message(ocr_text)){
+                    // Add item to stats with fixed name so all items increment the same counter
+                    stats.add_item("Item");
                     
-                    if (!item_name.empty()){
-                        item_counts[item_name]++;
-                        uint32_t current_count = item_counts[item_name];
-                        
-                        env.log(
-                            "Item detected: \"" + item_name + "\" - " + 
-                            std::to_string(current_count) + " found so far (loop " + 
-                            std::to_string(count + 1) + " of " + std::to_string(ATTEMPTS) + ")",
-                            COLOR_GREEN
-                        );
-                    }else{
-                        env.log("Could not extract item name from OCR text.", COLOR_YELLOW);
-                    }
-                }else{
-                    env.log("OCR returned empty text.", COLOR_YELLOW);
+                    // Update stats display (will show count in UI)
+                    env.update_stats();
                 }
-            }else{
-                env.log("No video snapshot available for OCR.", COLOR_YELLOW);
             }
         }
 
